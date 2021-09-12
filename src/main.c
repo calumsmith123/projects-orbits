@@ -30,10 +30,10 @@
 #define NO_ERROR 0
 #define ERROR 1
 
-#define IN_FILE "N_body_data.txt"
-#define OUT_FILE "orbit.dat"
+#define IN_FILE "./inputData/N_body_data.txt"
+#define OUT_FILE "./outputData/orbit.dat"
 #define GNUPLOT_EXE "gnuplot -p"
-#define GNUPLOT_SH "SEM_script.txt"
+#define GNUPLOT_SH "./src/SEM_script.txt"
 
 // maximum length of individual file lines to read in
 #define MAX_FILE_LINE 250

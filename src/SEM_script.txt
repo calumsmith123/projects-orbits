@@ -1,0 +1,5 @@
+# ./src/SEM_script.txt
+set title 'Orbits'
+set zrange[-1.0:1.0]
+splot './outputData/orbit.dat' using 2:3:4 title 'Sun' with linespoints pt 7, './outputData/orbit.dat' using 5:6:7 title 'Earth' with linespoints pt 7, './outputData/orbit.dat' using 8:9:10 title 'Mercury' with linespoints pt 7, './outputData/orbit.dat' using 11:12:13 title 'Venus' with linespoints pt 7, './outputData/orbit.dat' using 14:15:16 title 'Mars' with linespoints pt 7, 
+exit
