@@ -27,45 +27,33 @@
 #include <gsl/gsl_odeiv2.h>
 #include <gsl/gsl_errno.h>
 
+#include "./definitions/body.h"
+
 #define NO_ERROR 0
 #define ERROR 1
 
 #define IN_FILE "./inputData/N_body_data.txt"
 #define OUT_FILE "./outputData/orbit.dat"
 #define GNUPLOT_EXE "gnuplot -p"
-#define GNUPLOT_SH "./src/SEM_script.txt"
+#define GNUPLOT_SH "./src/display/SEM_script.txt"
 
 // maximum length of individual file lines to read in
 #define MAX_FILE_LINE 250
 // name mass x y x vx vy vz
 #define ARG_PER_LINE 8
 #define MAX_OBJ 10
-// maximum characters in object names
-#define MAX_NAME 32
 // In seconds
 #define TIME_STEP 86400
 #define G 6.67408e-11
 // precision controller solves equations to using GSL algorithms
 #define GSL_ACC 1e-6
 
-typedef enum coords {
-    X, Y, Z, N_COORDS
-} Coords;
-
-struct object {
-    char name[MAX_NAME];
-    double mass;
-    double r[N_COORDS];
-    double v[N_COORDS];
-    double a[N_COORDS];
-} Object;
-
 struct ptr_array {
     int centre_object;
     int k;
     int obj_num;
     double mass_sum;
-    struct object ptr[MAX_OBJ];
+    struct Body ptr[MAX_OBJ];
 };
 
 struct energy {
@@ -92,7 +80,7 @@ static int number(const char *num) {
 /* CITE{http://vle.exeter.ac.uk/pluginfile.php/558109/mod_resource/content/2/ReadOrbitsFileExample.pdf}
  * Reads in data from file for lines which satisfy the correct format and saves to pointer */
 
-static int rd_obj(struct object *obj_ptr) {
+static int rd_obj(struct Body *obj_ptr) {
     FILE *rd_in = fopen(IN_FILE, "r");
     if (rd_in == NULL) {
         fprintf(stderr, "ERROR: Can't open %s\n", IN_FILE);
@@ -104,8 +92,8 @@ static int rd_obj(struct object *obj_ptr) {
         ++k; // Tracks file line number
         if (line[0] != '#') {
             arg_num = sscanf(line, "%s %lg %lg %lg %lg %lg %lg %lg", name_buf, &(obj_ptr + obj_num)->mass,
-                             &(obj_ptr + obj_num)->r[X], &(obj_ptr + obj_num)->r[Y], &(obj_ptr + obj_num)->r[Z],
-                             &(obj_ptr + obj_num)->v[X], &(obj_ptr + obj_num)->v[Y], &(obj_ptr + obj_num)->v[Z]);
+                             &(obj_ptr + obj_num)->radius[X], &(obj_ptr + obj_num)->radius[Y], &(obj_ptr + obj_num)->radius[Z],
+                             &(obj_ptr + obj_num)->velocity[X], &(obj_ptr + obj_num)->velocity[Y], &(obj_ptr + obj_num)->velocity[Z]);
             // If correct format on line, save name to pointer
             if (arg_num == ARG_PER_LINE) {
                 strncpy((obj_ptr + obj_num)->name, name_buf, MAX_NAME);
@@ -121,7 +109,7 @@ static int rd_obj(struct object *obj_ptr) {
 
 /* select centre of system */
 
-static int centre(struct object *obj_ptr, int obj_num) {
+static int centre(struct Body *obj_ptr, int obj_num) {
     printf("Centre system on object, %d defaults to centre of mass\n", obj_num);
     char input;
     while (1) {
@@ -141,7 +129,7 @@ static int centre(struct object *obj_ptr, int obj_num) {
 
 /* Finds total system mass */
 
-static double tot_mass(struct object *obj_ptr, int obj_num) {
+static double tot_mass(struct Body *obj_ptr, int obj_num) {
     double mass_sum = 0.0;
     for (int i = 0; i < obj_num; ++i) {
         mass_sum += (obj_ptr + i)->mass;
@@ -156,21 +144,21 @@ static double tot_mass(struct object *obj_ptr, int obj_num) {
 
 /* Finds the centre of mass of the system then recalculates relative position */
 
-static void centre_of_mass(int centre_object, struct object *obj_ptr, int obj_num, double mass_sum) {
-    double centre[N_COORDS], rel_mass[N_COORDS];
-    for (int j = 0; j < N_COORDS; ++j) {
+static void centre_of_mass(int centre_object, struct Body *obj_ptr, int obj_num, double mass_sum) {
+    double centre[N], rel_mass[N];
+    for (int j = 0; j < N; ++j) {
         if (!centre_object) {
             rel_mass[j] = 0.0;
             for (int i = 0; i < obj_num; ++i) {
-                rel_mass[j] += (obj_ptr + i)->mass * (obj_ptr + i)->r[j];
+                rel_mass[j] += (obj_ptr + i)->mass * (obj_ptr + i)->radius[j];
             }
             centre[j] = rel_mass[j] / mass_sum;
         } else {
-            centre[j] = (obj_ptr + centre_object)->r[j];
+            centre[j] = (obj_ptr + centre_object)->radius[j];
         }
         for (int i = 0; i < obj_num; ++i) {
             // translate position vectors to normalised coordinates
-            (obj_ptr + i)->r[j] -= centre[j];
+            (obj_ptr + i)->radius[j] -= centre[j];
 
         }
     }
@@ -179,14 +167,14 @@ static void centre_of_mass(int centre_object, struct object *obj_ptr, int obj_nu
 
 /* Calculates energy of the system */
 
-static struct energy system_energy(struct object *obj_ptr, int obj_num) {
+static struct energy system_energy(struct Body *obj_ptr, int obj_num) {
     double m, vsq, rsq;
     struct energy energy;
     energy.ke = 0.0, energy.pe = 0.0;
     for (int i = 0; i < obj_num; ++i) {
         vsq = 0.0;
-        for (int j = 0; j < N_COORDS; ++j) {
-            vsq += pow((obj_ptr + i)->v[j], 2);
+        for (int j = 0; j < N; ++j) {
+            vsq += pow((obj_ptr + i)->velocity[j], 2);
         }
         // Sum kinetic energy for each object
         energy.ke += 0.5 * (obj_ptr + i)->mass * vsq;
@@ -194,8 +182,8 @@ static struct energy system_energy(struct object *obj_ptr, int obj_num) {
         for (int k = 0; k < obj_num; ++k) {
             if (k > i) {
                 rsq = 0.0;
-                for (int j = 0; j < N_COORDS; ++j) {
-                    rsq += pow((obj_ptr + i)->r[j] - (obj_ptr + k)->r[j], 2);
+                for (int j = 0; j < N; ++j) {
+                    rsq += pow((obj_ptr + i)->radius[j] - (obj_ptr + k)->radius[j], 2);
                 }
                 m += (obj_ptr + k)->mass / sqrt(rsq);
             }
@@ -209,24 +197,24 @@ static struct energy system_energy(struct object *obj_ptr, int obj_num) {
 
 /* Calculates acceleration of objects in the system */
 
-static void acceleration(struct object *obj_ptr, int obj_num) {
-    double rsq, rn[N_COORDS];
+static void acceleration(struct Body *obj_ptr, int obj_num) {
+    double rsq, rn[N];
     for (int i = 0; i < obj_num; ++i) {
-        for (int j = 0; j < N_COORDS; ++j) {
+        for (int j = 0; j < N; ++j) {
             // Reset object accelerations ready for recalculation
-            (obj_ptr + i)->a[j] = 0.0;
+            (obj_ptr + i)->acceleration[j] = 0.0;
         }
         for (int k = 0; k < obj_num; ++k) {
             if (k != i) {
                 rsq = 0.0;
-                for (int j = 0; j < N_COORDS; ++j) {
+                for (int j = 0; j < N; ++j) {
                     // convert x y z to r
-                    rn[j] = (obj_ptr + i)->r[j] - (obj_ptr + k)->r[j];
+                    rn[j] = (obj_ptr + i)->radius[j] - (obj_ptr + k)->radius[j];
                     rsq += pow(rn[j], 2);
                 }
                 if (rsq != 0.0) {
-                    for (int j = 0; j < N_COORDS; ++j) {
-                        (obj_ptr + i)->a[j] -= G * (obj_ptr + k)->mass * rn[j] / fabs(pow(rsq, 1.5));
+                    for (int j = 0; j < N; ++j) {
+                        (obj_ptr + i)->acceleration[j] -= G * (obj_ptr + k)->mass * rn[j] / fabs(pow(rsq, 1.5));
                     }
                 } else {
                     fprintf(stderr, "ERROR: %s has inf acceleration\n", (obj_ptr + i)->name);
@@ -239,11 +227,11 @@ static void acceleration(struct object *obj_ptr, int obj_num) {
 
 /* prints object positions to file */
 
-static void print_file(FILE *wr_out, struct object *obj_ptr, int obj_num, double time) {
+static void print_file(FILE *wr_out, struct Body *obj_ptr, int obj_num, double time) {
     fprintf(wr_out, "%e\t", time);
     for (int i = 0; i < obj_num; ++i) {
-        for (int j = 0; j < N_COORDS; ++j) {
-            fprintf(wr_out, "%e\t", (obj_ptr + i)->r[j]);
+        for (int j = 0; j < N; ++j) {
+            fprintf(wr_out, "%e\t", (obj_ptr + i)->radius[j]);
         }
     }
     fprintf(wr_out, "\n");
@@ -251,20 +239,20 @@ static void print_file(FILE *wr_out, struct object *obj_ptr, int obj_num, double
 
 /* Calculates velocity of objects in the system */
 
-static void velocity(struct object *obj_ptr, int obj_num) {
+static void velocity(struct Body *obj_ptr, int obj_num) {
     for (int i = 0; i < obj_num; ++i) {
-        for (int j = 0; j < N_COORDS; ++j) {
-            (obj_ptr + i)->v[j] += (obj_ptr + i)->a[j] * TIME_STEP / 2;
+        for (int j = 0; j < N; ++j) {
+            (obj_ptr + i)->velocity[j] += (obj_ptr + i)->acceleration[j] * TIME_STEP / 2;
         }
     }
 }
 
 /* Calculates position of objects in the system */
 
-static void position(struct object *obj_ptr, int obj_num) {
+static void position(struct Body *obj_ptr, int obj_num) {
     for (int i = 0; i < obj_num; ++i) {
-        for (int j = 0; j < N_COORDS; ++j) {
-            (obj_ptr + i)->r[j] += (obj_ptr + i)->v[j] * TIME_STEP;
+        for (int j = 0; j < N; ++j) {
+            (obj_ptr + i)->radius[j] += (obj_ptr + i)->velocity[j] * TIME_STEP;
         }
     }
 }
@@ -272,7 +260,7 @@ static void position(struct object *obj_ptr, int obj_num) {
 /* updates motion of objects in the system for each time step using verlet method */
 
 static int
-verlet(int centre_object, struct object *obj_ptr, FILE *wr_out, int obj_num, double mass_sum, double run_time) {
+verlet(int centre_object, struct Body *obj_ptr, FILE *wr_out, int obj_num, double mass_sum, double run_time) {
     acceleration(obj_ptr, obj_num);
 
     double time = 0.0;
@@ -297,9 +285,9 @@ static int ode_solve(double t, const double y[], double dydt[], void *params) {
     centre_of_mass(array.centre_object, array.ptr, array.obj_num, array.mass_sum);
     acceleration(array.ptr, array.obj_num);
 
-    for (int j = 0; j < N_COORDS; ++j) {
-        dydt[j] = y[j + N_COORDS];
-        dydt[j + N_COORDS] = array.ptr[array.k].a[j];
+    for (int j = 0; j < N; ++j) {
+        dydt[j] = y[j + N];
+        dydt[j + N] = array.ptr[array.k].acceleration[j];
     }
 
     return GSL_SUCCESS;
@@ -307,7 +295,7 @@ static int ode_solve(double t, const double y[], double dydt[], void *params) {
 
 /* updates motion of objects in the system for each time step using gnu scientific libraries */
 
-static int gsl(int centre_object, const gsl_odeiv2_step_type *alg, struct object *obj_ptr, FILE *wr_out, int obj_num,
+static int gsl(int centre_object, const gsl_odeiv2_step_type *alg, struct Body *obj_ptr, FILE *wr_out, int obj_num,
                double mass_sum, double run_time) {
     struct ptr_array array;
     array.centre_object = centre_object;
@@ -317,19 +305,19 @@ static int gsl(int centre_object, const gsl_odeiv2_step_type *alg, struct object
         // save data to structure to be passed to ode_solve
         array.ptr[i] = *(obj_ptr + i);
     }
-    gsl_odeiv2_system sys = {ode_solve, NULL, 2 * N_COORDS, &array};
+    gsl_odeiv2_system sys = {ode_solve, NULL, 2 * N, &array};
     gsl_odeiv2_driver *drive = gsl_odeiv2_driver_alloc_y_new(&sys, alg, GSL_ACC, GSL_ACC, 0.0);
 
-    double time = 0.0, y[2 * N_COORDS];
+    double time = 0.0, y[2 * N];
     for (int t = 1; t <= run_time; ++t) {
         double t_next = t * TIME_STEP;
         print_file(wr_out, obj_ptr, obj_num, time);
 
         for (int i = 0; i < obj_num; ++i) {
-            for (int j = 0; j < N_COORDS; ++j) {
+            for (int j = 0; j < N; ++j) {
                 // copy position and velocity into a single array
-                y[j] = (obj_ptr + i)->r[j];
-                y[j + N_COORDS] = (obj_ptr + i)->v[j];
+                y[j] = (obj_ptr + i)->radius[j];
+                y[j + N] = (obj_ptr + i)->velocity[j];
             }
             time = t_next - TIME_STEP;
             array.k = i;
@@ -340,10 +328,10 @@ static int gsl(int centre_object, const gsl_odeiv2_step_type *alg, struct object
                 fprintf(stderr, "ERROR: return value %d\n", status);
                 exit(ERROR);
             }
-            for (int j = 0; j < N_COORDS; ++j) {
+            for (int j = 0; j < N; ++j) {
                 // copy updated array back into position and velocity pointers
-                (obj_ptr + i)->r[j] = y[j];
-                (obj_ptr + i)->v[j] = y[j + N_COORDS];
+                (obj_ptr + i)->radius[j] = y[j];
+                (obj_ptr + i)->velocity[j] = y[j + N];
             }
             array.ptr[i] = *(obj_ptr + i);
         }
@@ -364,17 +352,17 @@ static void print_energy(struct energy i_energy, struct energy f_energy) {
 
 /* writes gnuplot script to plot data file */
 
-static void gnuplot(struct object *obj_ptr, int obj_num) {
+static void gnuplot(struct Body *obj_ptr, int obj_num) {
     FILE *wr_script = fopen(GNUPLOT_SH, "w");
     if (wr_script == NULL) {
         fprintf(stderr, "ERROR: Can't open %s\n", GNUPLOT_SH);
         exit(ERROR);
     }
     int dim = 0, line;
-    for (int j = 0; j < N_COORDS; ++j) {
+    for (int j = 0; j < N; ++j) {
         for (int i = 0; i < obj_num; ++i) {
             // detect dimensions of data
-            if ((obj_ptr + i)->r[j] != 0) {
+            if ((obj_ptr + i)->radius[j] != 0) {
                 ++dim;
                 break;
             }
@@ -395,9 +383,9 @@ static void gnuplot(struct object *obj_ptr, int obj_num) {
 
     for (int i = 0; i < obj_num; ++i) {
         // lines in data file corresponding to each object
-        line = N_COORDS * i + 2;
+        line = N * i + 2;
         fprintf(wr_script, "'%s' using %d", OUT_FILE, line);
-        for (int j = 1; j < N_COORDS; ++j) {
+        for (int j = 1; j < N; ++j) {
             fprintf(wr_script, ":%d", line + j);
         }
         fprintf(wr_script, " title '%s' with linespoints pt 7, ", (obj_ptr + i)->name);
@@ -412,7 +400,7 @@ static void gnuplot(struct object *obj_ptr, int obj_num) {
 
 /* initialises motion of objects in the system */
 
-static void orbits(const gsl_odeiv2_step_type *alg, struct object *obj_ptr, double run_time) {
+static void orbits(const gsl_odeiv2_step_type *alg, struct Body *obj_ptr, double run_time) {
     FILE *wr_out = fopen(OUT_FILE, "w");
     if (wr_out == NULL) {
         fprintf(stderr, "ERROR: Can't open %s\n", OUT_FILE);
@@ -448,7 +436,7 @@ int main(int argc, char *argv[]) {
     if (argc == 3 && number(argv[2]) &&
         (strcmp(argv[1], "GSL_rkf45") == 0 || strcmp(argv[1], "GSL_rk2") == 0 || strcmp(argv[1], "Verlet") == 0)) {
         // Sets memory for pointer
-        struct object *obj_ptr = malloc(MAX_OBJ * sizeof(Object));
+        struct Body *obj_ptr = malloc(MAX_OBJ * sizeof(body));
         if (obj_ptr == NULL) {
             fprintf(stderr, "ERROR: Memory not allocated\n");
             exit(ERROR);
